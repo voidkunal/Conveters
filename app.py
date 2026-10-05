@@ -4,7 +4,6 @@ import os
 import requests
 import urllib.parse
 import shutil
-import tempfile
 import re
 
 # --- 1. Page Config & Session State ---
@@ -13,6 +12,7 @@ st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="w
 if 'app_step' not in st.session_state:
     st.session_state.app_step = 'input'
 
+# Fix for Streamlit Cloud file permissions: Use a local folder instead of tempfile
 if 'temp_dir' not in st.session_state:
     os.makedirs('downloads', exist_ok=True)
     st.session_state.temp_dir = 'downloads'
@@ -91,9 +91,8 @@ def get_base_opts(flat=False):
         'nocheckcertificate': True,
         'no_warnings': True,
         'source_address': '0.0.0.0', 
-        'rm_cachedir': True, # CRITICAL: Clears bad tokens that cause persistent 403s
+        'rm_cachedir': True,
         'extractor_args': {
-            # CRITICAL: Completely removed 'web'. We only use app APIs now to bypass the 403.
             'youtube': {'player_client': ['android', 'tv']}
         }
     }
