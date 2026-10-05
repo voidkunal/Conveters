@@ -1,11 +1,13 @@
 import streamlit as st
 import yt_dlp
+import imageio_ffmpeg
 import os
 import requests
 import urllib.parse
 import shutil
 import tempfile
 import re
+import subprocess
 
 # --- 1. Page Config & Session State ---
 st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="wide")
@@ -48,7 +50,12 @@ with col_links:
         </div>
     """, unsafe_allow_html=True)
 with col_toggle:
-    dark_mode = st.toggle("", value=False, key="dark_mode_toggle")
+    dark_mode = st.toggle(
+        "Dark mode",
+        value=False,
+        key="dark_mode_toggle",
+        label_visibility="collapsed",
+    )
 
 theme_css = """
     :root {
@@ -86,36 +93,100 @@ st.markdown("<div class='sub-title'>Intelligently auto-detects, previews, and do
 def get_base_opts(flat=False):
     opts = {
         'quiet': True, 
-        'nocheckcertificate': True,
         'no_warnings': True,
-        'source_address': '0.0.0.0', 
         'rm_cachedir': True,
         'force_ipv4': True,
-        'format': 'best',
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        },
-        'extractor_args': {
-            'youtube': {'player_client': ['android', 'web']}
-        }
     }
 
-    if os.path.exists('cookies.txt'):
-        opts['cookiefile'] = 'cookies.txt'
+    cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+    if os.path.isfile(cookie_file):
+        opts['cookiefile'] = cookie_file
         
     if flat:
         opts['extract_flat'] = 'in_playlist'
     return opts
+
+
+def get_ffmpeg_path():
+    return shutil.which('ffmpeg') or imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def find_downloaded_file(ydl, info):
+    candidates = []
+    if info.get('filepath'):
+        candidates.append(info['filepath'])
+    candidates.append(ydl.prepare_filename(info))
+    for requested in info.get('requested_downloads') or []:
+        if requested.get('filepath'):
+            candidates.append(requested['filepath'])
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    for candidate in candidates:
+        base, _ = os.path.splitext(candidate)
+        for extension in ('.mp4', '.mkv', '.webm', '.mov', '.m4a', '.mp3'):
+            path = base + extension
+            if os.path.isfile(path):
+                return path
+
+    raise FileNotFoundError("yt-dlp reported success, but the downloaded media file was not found.")
+
+
+def convert_video_to_mp4(source_path, ffmpeg_path):
+    output_dir = os.path.dirname(source_path) or '.'
+    output_path = os.path.splitext(source_path)[0] + '.mp4'
+    fd, temporary_path = tempfile.mkstemp(suffix='.mp4', dir=output_dir)
+    os.close(fd)
+
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg_path,
+                '-hide_banner',
+                '-loglevel', 'error',
+                '-y',
+                '-i', source_path,
+                '-map', '0:v:0',
+                '-map', '0:a:0?',
+                '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                temporary_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            details = result.stderr.strip().splitlines()
+            raise RuntimeError(
+                "MP4 conversion failed: "
+                + (details[-1] if details else "FFmpeg returned an error.")
+            )
+
+        os.replace(temporary_path, output_path)
+        if os.path.abspath(source_path) != os.path.abspath(output_path):
+            os.remove(source_path)
+        return output_path
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
 
 # --- 4. Processing Logic ---
 def process_single_download(target_url, is_audio=False):
     with st.spinner("Downloading media to server buffer..."):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
-        ffmpeg_path = shutil.which('ffmpeg')
-        if ffmpeg_path:
-            opts['ffmpeg_location'] = ffmpeg_path
+        ffmpeg_path = get_ffmpeg_path()
+        opts['ffmpeg_location'] = ffmpeg_path
 
         if is_audio:
             opts['format'] = 'bestaudio/best'
@@ -128,23 +199,22 @@ def process_single_download(target_url, is_audio=False):
             else:
                 st.info("FFmpeg is unavailable, so the audio will be downloaded in its original format.")
         else:
-            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            opts['format'] = (
+                'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
+                'bestvideo+bestaudio/bestvideo'
+            )
         
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(target_url, download=True)
-                expected_filename = ydl.prepare_filename(info)
+                downloaded_path = find_downloaded_file(ydl, info)
 
-                if is_audio and ffmpeg_path:
-                    base, _ = os.path.splitext(expected_filename)
-                    expected_filename = base + '.mp3'
-                elif not is_audio:
-                    if not os.path.exists(expected_filename):
-                        base, _ = os.path.splitext(expected_filename)
-                        for ext in ['.mp4', '.mkv', '.webm']:
-                            if os.path.exists(base + ext):
-                                expected_filename = base + ext
-                                break
+                if is_audio:
+                    expected_filename = os.path.splitext(downloaded_path)[0] + '.mp3'
+                    if not os.path.isfile(expected_filename):
+                        raise FileNotFoundError("FFmpeg did not produce the requested MP3 file.")
+                else:
+                    expected_filename = convert_video_to_mp4(downloaded_path, ffmpeg_path)
                 
                 st.session_state.file_path = expected_filename
                 st.session_state.download_is_audio = is_audio
@@ -152,8 +222,25 @@ def process_single_download(target_url, is_audio=False):
                 st.rerun()
         except Exception as e:
             error_msg = str(e)
-            if "403" in error_msg or "Sign in" in error_msg:
-                st.error(f"❌ **Platform Blocked Request:** YouTube is temporarily blocking the cloud server. \n\n*Technical Details:* `{error_msg}`")
+            hostname = (urllib.parse.urlparse(target_url).hostname or "").lower()
+            is_youtube = (
+                hostname == "youtu.be"
+                or hostname == "youtube.com"
+                or hostname.endswith(".youtube.com")
+            )
+            if "403" in error_msg and is_youtube:
+                st.error(
+                    "❌ **YouTube rejected the download (HTTP 403).** "
+                    "The app now uses yt-dlp's default YouTube clients and JavaScript support. "
+                    "If this continues on a cloud host, YouTube may be blocking that server's IP. "
+                    "Try again from a different network, or use your own valid cookies.txt file "
+                    "for content your account is allowed to access. Never commit or share cookies.txt."
+                    f"\n\n*Technical Details:* `{error_msg}`"
+                )
+            elif "403" in error_msg:
+                st.error(f"❌ **The media host rejected the download (HTTP 403).**\n\n*Technical Details:* `{error_msg}`")
+            elif "Sign in" in error_msg:
+                st.error(f"❌ **Sign-in is required to access this media.** Use content available to your account, and configure your own cookies.txt if appropriate.\n\n*Technical Details:* `{error_msg}`")
             else:
                 st.error(f"❌ **Extraction Error:** \n\n`{error_msg}`")
 
@@ -309,7 +396,7 @@ elif st.session_state.app_step == 'preview':
         if st.session_state.detected_type in ('video', 'audio'):
             if st.session_state.has_video and st.button("Download Video", use_container_width=True):
                 process_single_download(st.session_state.target_url)
-            audio_label = "Download Audio (MP3)" if shutil.which('ffmpeg') else "Download Audio (Original Format)"
+            audio_label = "Download Audio (MP3)" if get_ffmpeg_path() else "Download Audio (Original Format)"
             if st.session_state.has_audio and st.button(audio_label, use_container_width=True):
                 process_single_download(st.session_state.target_url, is_audio=True)
                     
