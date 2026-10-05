@@ -91,10 +91,20 @@ def get_base_opts(flat=False):
         'source_address': '0.0.0.0', 
         'rm_cachedir': True,
         'ffmpeg_location': '/usr/bin/ffmpeg',
+        'force_ipv4': True,
+        'ignore_no_formats_error': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        },
         'extractor_args': {
             'youtube': {'player_client': ['ios']}
         }
     }
+    
+    if os.path.exists('cookies.txt'):
+        opts['cookiefile'] = 'cookies.txt'
+        
     if flat:
         opts['extract_flat'] = 'in_playlist'
     return opts
@@ -104,7 +114,7 @@ def process_single_download(target_url, format_str, is_audio=False):
     with st.spinner("Downloading media to server buffer..."):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
-        
+
         if is_audio:
             opts['format'] = 'bestaudio/best'
             opts['postprocessors'] = [{
@@ -119,11 +129,11 @@ def process_single_download(target_url, format_str, is_audio=False):
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(target_url, download=True)
                 expected_filename = ydl.prepare_filename(info)
-                
+
                 if is_audio:
                     base, _ = os.path.splitext(expected_filename)
                     expected_filename = base + '.mp3'
-                    
+                
                 st.session_state.file_path = expected_filename
                 st.session_state.app_step = 'ready'
                 st.rerun()
@@ -144,7 +154,7 @@ def safe_ig_profile_scrape(url):
         if img_match:
             username = url.split('instagram.com/')[1].replace('/', '')
             return {
-                'image': img_match.group(1),
+                'image': img_match.group(1).replace('&amp;', '&'),
                 'description': desc_match.group(1).split('- See Instagram')[0].strip() if desc_match else "Instagram Profile",
                 'username': f"@{username}"
             }
@@ -177,15 +187,20 @@ if st.session_state.app_step == 'input':
                     with yt_dlp.YoutubeDL(get_base_opts(flat=True)) as ydl:
                         info = ydl.extract_info(url, download=False)
                         st.session_state.media_title = info.get('title', 'Unknown Media')
-                        st.session_state.thumbnail_url = info.get('thumbnail')
-                        st.session_state.direct_url = info.get('url')
+                        
+                        thumbnails = info.get('thumbnails', [])
+                        best_thumb = thumbnails[-1]['url'] if thumbnails else info.get('thumbnail')
+                        
+                        st.session_state.thumbnail_url = best_thumb
+                        st.session_state.direct_url = info.get('url', best_thumb)
                         st.session_state.target_url = info.get('webpage_url', url)
                         
-                        ext = info.get('ext', '').lower()
-                        if ext in ['mp4', 'webm', 'mov'] or info.get('vcodec') not in [None, 'none', '']:
-                            st.session_state.detected_type = 'video'
-                        elif ext in ['m4a', 'mp3', 'wav', 'ogg'] or info.get('acodec') not in [None, 'none', '']:
-                            st.session_state.detected_type = 'audio'
+                        if info.get('formats'):
+                            ext = info.get('ext', '').lower()
+                            if ext in ['mp4', 'webm', 'mov'] or info.get('vcodec') not in [None, 'none', '']:
+                                st.session_state.detected_type = 'video'
+                            else:
+                                st.session_state.detected_type = 'audio'
                         else:
                             st.session_state.detected_type = 'image'
                             
@@ -224,42 +239,51 @@ elif st.session_state.app_step == 'preview':
             if not base_url.endswith('/'): base_url += '/'
             st.markdown(f'''<div style="display: flex; justify-content: center; margin-bottom: 20px;"><iframe src="{base_url}embed" width="400" height="480" frameborder="0" scrolling="no" allowtransparency="true"></iframe></div>''', unsafe_allow_html=True)
         else:
-            if st.session_state.thumbnail_url: st.image(st.session_state.thumbnail_url, use_column_width=True)
+            if st.session_state.thumbnail_url: 
+                st.image(st.session_state.thumbnail_url, use_container_width=True)
             
     elif st.session_state.detected_type == 'audio':
-        st.audio(st.session_state.direct_url or st.session_state.target_url)
+        if st.session_state.direct_url or st.session_state.target_url:
+            st.audio(st.session_state.direct_url or st.session_state.target_url)
+            
     elif st.session_state.detected_type == 'image':
-        st.image(st.session_state.thumbnail_url or st.session_state.direct_url, use_column_width=True)
+        img_url = st.session_state.thumbnail_url or st.session_state.direct_url
+        if img_url:
+            st.image(img_url, use_container_width=True)
+        else:
+            st.info("Preview image not available, but you can still attempt to download below.")
 
     if st.session_state.detected_type != 'ig_profile_preview':
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### Available Downloads:")
         if st.session_state.detected_type == 'video':
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("Extract High-Quality Video (MP4)", use_container_width=True):
-                    process_single_download(st.session_state.target_url, 'b[ext=mp4]/best')
-            with col2:
-                if st.button("Extract Audio Track Only (MP3)", use_container_width=True):
-                    process_single_download(st.session_state.target_url, None, is_audio=True)
-                            
+            if st.button("Extract High-Quality Video (MP4)", use_container_width=True):
+                process_single_download(st.session_state.target_url, 'b[ext=mp4]/best')
+            if st.button("Extract Audio Track Only (MP3)", use_container_width=True):
+                process_single_download(st.session_state.target_url, None, is_audio=True)
+                        
         elif st.session_state.detected_type == 'audio':
             if st.button("Download Audio Track (MP3)", use_container_width=True):
                 process_single_download(st.session_state.target_url, None, is_audio=True)
-                        
+                    
         elif st.session_state.detected_type == 'image':
             if st.button("Download High Quality Image", use_container_width=True):
                 with st.spinner("Downloading image..."):
                     target_img_url = st.session_state.direct_url or st.session_state.thumbnail_url
                     if target_img_url:
-                        img_data = requests.get(target_img_url).content
-                        safe_title = "".join([c for c in st.session_state.media_title if c.isalpha() or c.isdigit()]).rstrip()
-                        file_path = os.path.join(st.session_state.temp_dir, f"{safe_title if safe_title else 'downloaded_image'}.jpg")
-                        with open(file_path, 'wb') as handler:
-                            handler.write(img_data)
-                        st.session_state.file_path = file_path
-                        st.session_state.app_step = 'ready'
-                        st.rerun()
+                        try:
+                            img_data = requests.get(target_img_url).content
+                            safe_title = "".join([c for c in st.session_state.media_title if c.isalpha() or c.isdigit()]).rstrip()
+                            file_path = os.path.join(st.session_state.temp_dir, f"{safe_title if safe_title else 'downloaded_image'}.jpg")
+                            with open(file_path, 'wb') as handler:
+                                handler.write(img_data)
+                            st.session_state.file_path = file_path
+                            st.session_state.app_step = 'ready'
+                            st.rerun()
+                        except Exception as e:
+                            st.error("❌ Failed to download the image directly from the server.")
+                    else:
+                        st.error("❌ Cannot download: The media source did not provide a valid image file link.")
     
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Cancel & Go Back", use_container_width=True):
@@ -274,8 +298,8 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
         file_ext = os.path.splitext(st.session_state.file_path)[1].lower()
         mime_map = {
             '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+            '.jpg': 'image/jpeg', '.png': 'image/png',
             '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
-            '.jpg': 'image/jpeg', '.png': 'image/png'
         }
         mime_type = mime_map.get(file_ext, 'application/octet-stream')
         
