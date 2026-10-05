@@ -122,19 +122,61 @@ def find_downloaded_file(ydl, info):
 
     for candidate in candidates:
         if os.path.isfile(candidate):
-            return candidate
+            if os.path.getsize(candidate) > 0:
+                return candidate
 
     for candidate in candidates:
         base, _ = os.path.splitext(candidate)
         for extension in ('.mp4', '.mkv', '.webm', '.mov', '.m4a', '.mp3'):
             path = base + extension
-            if os.path.isfile(path):
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
                 return path
+
+    if any(os.path.isfile(candidate) for candidate in candidates):
+        raise RuntimeError(
+            "The media host created an empty download. It did not return media data."
+        )
 
     raise FileNotFoundError("yt-dlp reported success, but the downloaded media file was not found.")
 
 
+def get_download_error_message(target_url, error):
+    error_text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', str(error))
+    hostname = (urllib.parse.urlparse(target_url).hostname or "").lower()
+    is_youtube = (
+        hostname == "youtu.be"
+        or hostname == "youtube.com"
+        or hostname.endswith(".youtube.com")
+    )
+    media_rejected = (
+        "403" in error_text
+        or "downloaded file is empty" in error_text.lower()
+        or "empty download" in error_text.lower()
+    )
+
+    if is_youtube and media_rejected:
+        return (
+            "❌ **YouTube did not provide the video data to this server.** "
+            "This is a source-access restriction, not an MP4 conversion problem. "
+            "Streamlit Cloud may be unable to fetch media from YouTube; changing formats "
+            "or retrying conversion cannot repair a denied or empty response. "
+            "For content you are authorized to download, run the app on a network where "
+            "YouTube permits the request, or provide a direct media file from a host you control."
+            f"\n\n*Technical Details:* `{error_text}`"
+        )
+    if "requested format is not available" in error_text.lower():
+        return (
+            "❌ **No compatible format was returned by the media source.** "
+            "Update/redeploy the app dependencies and try again."
+            f"\n\n*Technical Details:* `{error_text}`"
+        )
+    return f"❌ **Extraction Error:**\n\n`{error_text}`"
+
+
 def convert_video_to_mp4(source_path, ffmpeg_path):
+    if not os.path.isfile(source_path) or os.path.getsize(source_path) == 0:
+        raise RuntimeError("The downloaded source file is empty; there is no media to convert.")
+
     output_dir = os.path.dirname(source_path) or '.'
     output_path = os.path.splitext(source_path)[0] + '.mp4'
     fd, temporary_path = tempfile.mkstemp(suffix='.mp4', dir=output_dir)
@@ -171,6 +213,8 @@ def convert_video_to_mp4(source_path, ffmpeg_path):
                 + (details[-1] if details else "FFmpeg returned an error.")
             )
 
+        if os.path.getsize(temporary_path) == 0:
+            raise RuntimeError("FFmpeg produced an empty MP4 file.")
         os.replace(temporary_path, output_path)
         if os.path.abspath(source_path) != os.path.abspath(output_path):
             os.remove(source_path)
@@ -213,6 +257,8 @@ def process_single_download(target_url, is_audio=False):
                     expected_filename = os.path.splitext(downloaded_path)[0] + '.mp3'
                     if not os.path.isfile(expected_filename):
                         raise FileNotFoundError("FFmpeg did not produce the requested MP3 file.")
+                    if os.path.getsize(expected_filename) == 0:
+                        raise RuntimeError("FFmpeg produced an empty MP3 file.")
                 else:
                     expected_filename = convert_video_to_mp4(downloaded_path, ffmpeg_path)
                 
@@ -221,28 +267,7 @@ def process_single_download(target_url, is_audio=False):
                 st.session_state.app_step = 'ready'
                 st.rerun()
         except Exception as e:
-            error_msg = str(e)
-            hostname = (urllib.parse.urlparse(target_url).hostname or "").lower()
-            is_youtube = (
-                hostname == "youtu.be"
-                or hostname == "youtube.com"
-                or hostname.endswith(".youtube.com")
-            )
-            if "403" in error_msg and is_youtube:
-                st.error(
-                    "❌ **YouTube rejected the download (HTTP 403).** "
-                    "The app now uses yt-dlp's default YouTube clients and JavaScript support. "
-                    "If this continues on a cloud host, YouTube may be blocking that server's IP. "
-                    "Try again from a different network, or use your own valid cookies.txt file "
-                    "for content your account is allowed to access. Never commit or share cookies.txt."
-                    f"\n\n*Technical Details:* `{error_msg}`"
-                )
-            elif "403" in error_msg:
-                st.error(f"❌ **The media host rejected the download (HTTP 403).**\n\n*Technical Details:* `{error_msg}`")
-            elif "Sign in" in error_msg:
-                st.error(f"❌ **Sign-in is required to access this media.** Use content available to your account, and configure your own cookies.txt if appropriate.\n\n*Technical Details:* `{error_msg}`")
-            else:
-                st.error(f"❌ **Extraction Error:** \n\n`{error_msg}`")
+            st.error(get_download_error_message(target_url, e))
 
 def safe_ig_profile_scrape(url):
     try:
@@ -341,7 +366,7 @@ if st.session_state.app_step == 'input':
                         st.session_state.app_step = 'preview'
                         st.rerun()
                 except Exception as e:
-                    st.error(f"❌ Could not locate media. Ensure the link is public and valid. \n\n*Error details:* `{str(e)}`")
+                    st.error(get_download_error_message(url, e))
 
 # --- 6. Step 2: Dynamic Preview ---
 elif st.session_state.app_step == 'preview':
