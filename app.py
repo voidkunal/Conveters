@@ -51,12 +51,7 @@ with col_links:
         </div>
     """, unsafe_allow_html=True)
 with col_toggle:
-    dark_mode = st.toggle(
-        "Dark mode",
-        value=False,
-        key="dark_mode_toggle",
-        label_visibility="collapsed",
-    )
+    dark_mode = st.toggle("Dark mode", value=False, key="dark_mode_toggle", label_visibility="collapsed")
 
 theme_css = """
     :root {
@@ -93,10 +88,7 @@ st.markdown("<div class='sub-title'>Intelligently auto-detects, previews, and do
 # --- 3. Stealth yt-dlp Configuration ---
 @contextmanager
 def youtube_cookie_file():
-    local_cookie_file = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        'cookies.txt',
-    )
+    local_cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
     if os.path.isfile(local_cookie_file):
         yield local_cookie_file
         return
@@ -114,10 +106,7 @@ def youtube_cookie_file():
     if not isinstance(cookie_data, str):
         raise ValueError("YOUTUBE_COOKIES must contain Netscape-format cookie text.")
 
-    fd, temporary_cookie_file = tempfile.mkstemp(
-        prefix='conveters-youtube-cookies-',
-        suffix='.txt',
-    )
+    fd, temporary_cookie_file = tempfile.mkstemp(prefix='conveters-youtube-cookies-', suffix='.txt')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as cookie_file:
             cookie_file.write(cookie_data)
@@ -133,6 +122,13 @@ def get_base_opts(flat=False, cookie_file=None):
         'no_warnings': True,
         'rm_cachedir': True,
         'force_ipv4': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        },
+        'extractor_args': {
+            'youtube': {'player_client': ['android', 'web']}
+        }
     }
 
     if cookie_file:
@@ -157,9 +153,8 @@ def find_downloaded_file(ydl, info):
             candidates.append(requested['filepath'])
 
     for candidate in candidates:
-        if os.path.isfile(candidate):
-            if os.path.getsize(candidate) > 0:
-                return candidate
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 0:
+            return candidate
 
     for candidate in candidates:
         base, _ = os.path.splitext(candidate)
@@ -169,9 +164,7 @@ def find_downloaded_file(ydl, info):
                 return path
 
     if any(os.path.isfile(candidate) for candidate in candidates):
-        raise RuntimeError(
-            "The media host created an empty download. It did not return media data."
-        )
+        raise RuntimeError("The media host created an empty download. It did not return media data.")
 
     raise FileNotFoundError("yt-dlp reported success, but the downloaded media file was not found.")
 
@@ -179,31 +172,19 @@ def find_downloaded_file(ydl, info):
 def get_download_error_message(target_url, error):
     error_text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', str(error))
     hostname = (urllib.parse.urlparse(target_url).hostname or "").lower()
-    is_youtube = (
-        hostname == "youtu.be"
-        or hostname == "youtube.com"
-        or hostname.endswith(".youtube.com")
-    )
-    media_rejected = (
-        "403" in error_text
-        or "downloaded file is empty" in error_text.lower()
-        or "empty download" in error_text.lower()
-    )
+    is_youtube = (hostname == "youtu.be" or hostname == "youtube.com" or hostname.endswith(".youtube.com"))
+    media_rejected = ("403" in error_text or "downloaded file is empty" in error_text.lower() or "empty download" in error_text.lower())
 
     if is_youtube and media_rejected:
         return (
             "❌ **YouTube did not provide the video data to this server.** "
-            "This is a YouTube access restriction, not an MP4 conversion problem. "
-            "For content that requires your account, configure your own exported cookies "
-            "as the YOUTUBE_COOKIES secret in Streamlit Cloud. If that secret is configured "
-            "and YouTube still returns 403, the cloud host is not permitted to fetch the media; "
-            "changing formats or retrying conversion cannot fix that."
+            "This is a YouTube access restriction blocking the cloud IP, not an MP4 conversion problem. "
+            "Changing formats or retrying will not fix this."
             f"\n\n*Technical Details:* `{error_text}`"
         )
     if "requested format is not available" in error_text.lower():
         return (
             "❌ **No compatible format was returned by the media source.** "
-            "Update/redeploy the app dependencies and try again."
             f"\n\n*Technical Details:* `{error_text}`"
         )
     return f"❌ **Extraction Error:**\n\n`{error_text}`"
@@ -221,33 +202,18 @@ def convert_video_to_mp4(source_path, ffmpeg_path):
     try:
         result = subprocess.run(
             [
-                ffmpeg_path,
-                '-hide_banner',
-                '-loglevel', 'error',
-                '-y',
-                '-i', source_path,
-                '-map', '0:v:0',
-                '-map', '0:a:0?',
+                ffmpeg_path, '-hide_banner', '-loglevel', 'error', '-y',
+                '-i', source_path, '-map', '0:v:0', '-map', '0:a:0?',
                 '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-                '-c:v', 'libx264',
-                '-preset', 'fast',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-movflags', '+faststart',
-                temporary_path,
+                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+                '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+                '-movflags', '+faststart', temporary_path,
             ],
-            capture_output=True,
-            text=True,
-            check=False,
+            capture_output=True, text=True, check=False,
         )
         if result.returncode:
             details = result.stderr.strip().splitlines()
-            raise RuntimeError(
-                "MP4 conversion failed: "
-                + (details[-1] if details else "FFmpeg returned an error.")
-            )
+            raise RuntimeError("MP4 conversion failed: " + (details[-1] if details else "FFmpeg returned an error."))
 
         if os.path.getsize(temporary_path) == 0:
             raise RuntimeError("FFmpeg produced an empty MP4 file.")
@@ -271,18 +237,11 @@ def process_single_download(target_url, is_audio=False):
         if is_audio:
             opts['format'] = 'bestaudio/best'
             if ffmpeg_path:
-                opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
+                opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
             else:
-                st.info("FFmpeg is unavailable, so the audio will be downloaded in its original format.")
+                st.info("FFmpeg is unavailable, audio will download in original format.")
         else:
-            opts['format'] = (
-                'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
-                'bestvideo+bestaudio/bestvideo'
-            )
+            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/bestvideo'
         
         try:
             with youtube_cookie_file() as cookie_file:
@@ -297,8 +256,6 @@ def process_single_download(target_url, is_audio=False):
                         expected_filename = os.path.splitext(downloaded_path)[0] + '.mp3'
                         if not os.path.isfile(expected_filename):
                             raise FileNotFoundError("FFmpeg did not produce the requested MP3 file.")
-                        if os.path.getsize(expected_filename) == 0:
-                            raise RuntimeError("FFmpeg produced an empty MP3 file.")
                     else:
                         expected_filename = convert_video_to_mp4(downloaded_path, ffmpeg_path)
                 
@@ -346,7 +303,7 @@ if st.session_state.app_step == 'input':
                     st.session_state.app_step = 'preview'
                     st.rerun()
                 else:
-                    st.error("❌ Meta blocked access to this profile. Please paste a link to an individual post or reel instead.")
+                    st.error("❌ Meta blocked access to this profile. Please paste an individual post link.")
             else:
                 try:
                     with youtube_cookie_file() as cookie_file:
@@ -354,25 +311,19 @@ if st.session_state.app_step == 'input':
                             info = ydl.extract_info(url, download=False)
                         
                         entries = info.get('entries')
-                        if entries and len(entries) > 0:
-                            media_info = entries[0]
-                        else:
-                            media_info = info
+                        media_info = entries[0] if entries else info
                             
                         st.session_state.media_title = media_info.get('title') or info.get('title', 'Unknown Media')
-                        
                         thumbnails = media_info.get('thumbnails', [])
                         best_thumb = thumbnails[-1]['url'] if thumbnails else media_info.get('thumbnail')
+                        
                         st.session_state.thumbnail_url = best_thumb
                         st.session_state.target_url = media_info.get('webpage_url') or info.get('webpage_url', url)
                         
-                        stream_formats = media_info.get('formats') or []
-                        formats = stream_formats or [media_info]
-                        
-                        has_vid = False
-                        has_aud = False
-                        
+                        formats = media_info.get('formats') or [media_info]
+                        has_vid, has_aud = False, False
                         best_direct_url = media_info.get('url')
+                        
                         for fmt in formats:
                             vcodec = fmt.get('vcodec')
                             acodec = fmt.get('acodec')
@@ -388,21 +339,16 @@ if st.session_state.app_step == 'input':
                                 
                         if media_info.get('_type') == 'video' or info.get('_type') == 'video':
                             has_vid = True
-                            if not stream_formats:
+                            if not media_info.get('formats'):
                                 has_aud = True
 
                         st.session_state.direct_url = best_direct_url
                         st.session_state.has_video = has_vid
                         st.session_state.has_audio = has_aud
-
-                        if st.session_state.has_video:
-                            st.session_state.detected_type = 'video'
-                        elif st.session_state.has_audio:
-                            st.session_state.detected_type = 'audio'
-                        else:
-                            st.session_state.detected_type = 'image'
-                            if not st.session_state.direct_url:
-                                st.session_state.direct_url = best_thumb
+                        st.session_state.detected_type = 'video' if has_vid else 'audio' if has_aud else 'image'
+                        
+                        if st.session_state.detected_type == 'image' and not st.session_state.direct_url:
+                            st.session_state.direct_url = best_thumb
                             
                         st.session_state.app_step = 'preview'
                         st.rerun()
@@ -423,16 +369,12 @@ elif st.session_state.app_step == 'preview':
                 </div>
             </div>
         """, unsafe_allow_html=True)
-        st.warning("⚠ **Notice:** Meta heavily restricts automated profile downloads. To download videos/photos, please copy and paste the link to an **individual post**.")
+        st.warning("⚠ Meta heavily restricts automated profile downloads. Download from individual post links instead.")
 
     elif st.session_state.detected_type == 'video':
         target = st.session_state.target_url.lower()
         if 'youtube.com' in target or 'youtu.be' in target:
-            preview_url = st.session_state.target_url
-            if '/shorts/' in preview_url:
-                preview_url = preview_url.replace('/shorts/', '/watch?v=')
-            st.video(preview_url)
-            
+            st.video(st.session_state.target_url.replace('/shorts/', '/watch?v='))
         elif 'instagram.com' in target or 'facebook.com' in target:
             if st.session_state.direct_url and '.mp4' in st.session_state.direct_url.lower():
                 st.video(st.session_state.direct_url)
@@ -450,11 +392,8 @@ elif st.session_state.app_step == 'preview':
             st.audio(st.session_state.direct_url or st.session_state.target_url)
             
     elif st.session_state.detected_type == 'image':
-        img_url = st.session_state.thumbnail_url or st.session_state.direct_url
-        if img_url:
-            st.image(img_url, use_container_width=True)
-        else:
-            st.info("Preview image not available, but you can still attempt to download below.")
+        if st.session_state.thumbnail_url or st.session_state.direct_url:
+            st.image(st.session_state.thumbnail_url or st.session_state.direct_url, use_container_width=True)
 
     if st.session_state.detected_type != 'ig_profile_preview':
         st.markdown("<hr>", unsafe_allow_html=True)
@@ -462,28 +401,24 @@ elif st.session_state.app_step == 'preview':
         if st.session_state.detected_type in ('video', 'audio'):
             if st.session_state.has_video and st.button("Download Video", use_container_width=True):
                 process_single_download(st.session_state.target_url)
-            audio_label = "Download Audio (MP3)" if get_ffmpeg_path() else "Download Audio (Original Format)"
-            if st.session_state.has_audio and st.button(audio_label, use_container_width=True):
+            if st.session_state.has_audio and st.button("Download Audio" + (" (MP3)" if get_ffmpeg_path() else ""), use_container_width=True):
                 process_single_download(st.session_state.target_url, is_audio=True)
                     
         elif st.session_state.detected_type == 'image':
-            if st.button("Download High Quality Image", use_container_width=True):
-                with st.spinner("Downloading image..."):
-                    target_img_url = st.session_state.direct_url or st.session_state.thumbnail_url
-                    if target_img_url:
-                        try:
-                            img_data = requests.get(target_img_url).content
-                            safe_title = "".join([c for c in st.session_state.media_title if c.isalpha() or c.isdigit()]).rstrip()
-                            file_path = os.path.join(st.session_state.temp_dir, f"{safe_title if safe_title else 'downloaded_image'}.jpg")
-                            with open(file_path, 'wb') as handler:
-                                handler.write(img_data)
-                            st.session_state.file_path = file_path
-                            st.session_state.app_step = 'ready'
-                            st.rerun()
-                        except Exception as e:
-                            st.error("❌ Failed to download the image directly from the server.")
-                    else:
-                        st.error("❌ Cannot download: The media source did not provide a valid image file link.")
+            if st.button("Download Image", use_container_width=True):
+                target_img = st.session_state.direct_url or st.session_state.thumbnail_url
+                if target_img:
+                    try:
+                        img_data = requests.get(target_img).content
+                        safe_title = "".join(c for c in st.session_state.media_title if c.isalnum()).rstrip() or 'downloaded_image'
+                        file_path = os.path.join(st.session_state.temp_dir, f"{safe_title}.jpg")
+                        with open(file_path, 'wb') as f:
+                            f.write(img_data)
+                        st.session_state.file_path = file_path
+                        st.session_state.app_step = 'ready'
+                        st.rerun()
+                    except:
+                        st.error("❌ Failed to download the image directly from the server.")
     
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("Cancel & Go Back", use_container_width=True):
@@ -498,19 +433,14 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
         file_ext = os.path.splitext(st.session_state.file_path)[1].lower()
         mime_map = {
             '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska',
-            '.jpg': 'image/jpeg', '.png': 'image/png',
-            '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
-            '.aac': 'audio/aac', '.opus': 'audio/ogg',
+            '.jpg': 'image/jpeg', '.png': 'image/png', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4'
         }
-        mime_type = mime_map.get(file_ext, 'application/octet-stream')
-        if file_ext == '.webm' and st.session_state.download_is_audio:
-            mime_type = 'audio/webm'
         
         st.download_button(
             label=f"Save {file_ext.upper().replace('.', '')} to Device",
             data=file,
             file_name=os.path.basename(st.session_state.file_path),
-            mime=mime_type,
+            mime=mime_map.get(file_ext, 'application/octet-stream'),
             use_container_width=True,
             type="primary"
         )
