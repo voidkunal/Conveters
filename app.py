@@ -4,6 +4,7 @@ import os
 import requests
 import urllib.parse
 import shutil
+import tempfile
 import re
 
 # --- 1. Page Config & Session State ---
@@ -11,8 +12,6 @@ st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="w
 
 if 'app_step' not in st.session_state:
     st.session_state.app_step = 'input'
-
-# Fix for Streamlit Cloud file permissions: Use a local folder instead of tempfile
 if 'temp_dir' not in st.session_state:
     os.makedirs('downloads', exist_ok=True)
     st.session_state.temp_dir = 'downloads'
@@ -22,7 +21,6 @@ for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected
         st.session_state[key] = None
 
 def full_cleanup():
-    """Instantly deletes the media file from the server to prevent storage double-usage."""
     if st.session_state.file_path and os.path.exists(st.session_state.file_path):
         try:
             if os.path.isdir(st.session_state.file_path):
@@ -31,7 +29,6 @@ def full_cleanup():
                 os.remove(st.session_state.file_path)
         except Exception:
             pass
-    
     st.session_state.app_step = 'input'
     for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected_type', 'target_url', 'profile_entries', 'ig_bio']:
         st.session_state[key] = None
@@ -93,26 +90,24 @@ def get_base_opts(flat=False):
         'source_address': '0.0.0.0', 
         'rm_cachedir': True,
         'extractor_args': {
-            'youtube': {'player_client': ['android', 'tv']}
+            'youtube': {'player_client': ['ios']} # The only client that currently bypasses the 403 wall
         }
     }
     if flat:
         opts['extract_flat'] = 'in_playlist'
     return opts
 
-# --- 4. Processing Logic ---
+# --- 4. Processing Logic with External Bypass API ---
 def process_single_download(target_url, format_str, is_audio=False):
+    safe_title = "".join([c for c in (st.session_state.media_title or "Media") if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+    
     with st.spinner("Downloading media to server buffer..."):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
         
         if is_audio:
             opts['format'] = 'bestaudio/best'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+            opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
         else:
             opts['format'] = format_str
         
@@ -120,7 +115,6 @@ def process_single_download(target_url, format_str, is_audio=False):
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(target_url, download=True)
                 expected_filename = ydl.prepare_filename(info)
-                
                 if is_audio:
                     base, _ = os.path.splitext(expected_filename)
                     expected_filename = base + '.mp3'
@@ -128,16 +122,45 @@ def process_single_download(target_url, format_str, is_audio=False):
                 st.session_state.file_path = expected_filename
                 st.session_state.app_step = 'ready'
                 st.rerun()
+                
         except Exception as e:
             error_msg = str(e)
-            if "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
-                st.error("⚠️ **Missing FFmpeg:** Streamlit Cloud requires a `packages.txt` file containing `ffmpeg` to convert MP3s.")
-            elif "403" in error_msg or "Sign in" in error_msg:
-                st.error(f"❌ **Platform Blocked Request:** YouTube is blocking Streamlit's IP address from downloading this specific video. \n\n*Technical Details:* `{error_msg}`")
+            
+            # TRIGGER THE CHEAT CODE: If Streamlit's IP gets 403'd, route through Cobalt API
+            if "403" in error_msg or "Sign in" in error_msg or "blocked" in error_msg.lower():
+                try:
+                    st.toast("Datacenter blocked. Rerouting through external API bypass...", icon="🔄")
+                    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+                    payload = {"url": target_url, "isAudioOnly": is_audio}
+                    
+                    res = requests.post("https://api.cobalt.tools/api/json", json=payload, headers=headers, timeout=20)
+                    res.raise_for_status()
+                    data = res.json()
+                    dl_url = data.get("url")
+                    
+                    if dl_url:
+                        ext = ".mp3" if is_audio else ".mp4"
+                        fallback_path = os.path.join(st.session_state.temp_dir, f"{safe_title}{ext}")
+                        
+                        with requests.get(dl_url, stream=True) as r:
+                            r.raise_for_status()
+                            with open(fallback_path, 'wb') as f:
+                                for chunk in r.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                                    
+                        st.session_state.file_path = fallback_path
+                        st.session_state.app_step = 'ready'
+                        st.rerun()
+                    else:
+                        st.error("❌ Total Failure: Streamlit IP is blocked, and the Bypass API could not fetch the link.")
+                except Exception as bypass_e:
+                    st.error(f"❌ **Total Failure:** Both the direct connection and bypass API were blocked. \n\n*Bypass Error:* `{str(bypass_e)}`")
+            
+            elif "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
+                st.error("⚠️️ **Missing FFmpeg:** Streamlit Cloud requires a `packages.txt` file containing `ffmpeg` to convert MP3s.")
             else:
                 st.error(f"❌ **Extraction Error:** \n\n`{error_msg}`")
 
-# Lightweight scraper to prevent crashes on Instagram Profiles
 def safe_ig_profile_scrape(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
