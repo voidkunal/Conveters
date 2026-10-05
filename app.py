@@ -192,24 +192,45 @@ if st.session_state.app_step == 'input':
                 try:
                     with yt_dlp.YoutubeDL(get_base_opts(flat=True)) as ydl:
                         info = ydl.extract_info(url, download=False)
-                        st.session_state.media_title = info.get('title', 'Unknown Media')
                         
-                        thumbnails = info.get('thumbnails', [])
-                        best_thumb = thumbnails[-1]['url'] if thumbnails else info.get('thumbnail')
+                        # Handle playlists/carousels (like Instagram multi-image posts)
+                        entries = info.get('entries')
+                        if entries and len(entries) > 0:
+                            media_info = entries[0]
+                        else:
+                            media_info = info
+                            
+                        st.session_state.media_title = media_info.get('title') or info.get('title', 'Unknown Media')
+                        
+                        thumbnails = media_info.get('thumbnails', [])
+                        best_thumb = thumbnails[-1]['url'] if thumbnails else media_info.get('thumbnail')
                         
                         st.session_state.thumbnail_url = best_thumb
-                        st.session_state.direct_url = info.get('url', best_thumb)
+                        st.session_state.direct_url = media_info.get('url')
                         st.session_state.target_url = info.get('webpage_url', url)
                         
-                        formats = info.get('formats') or [info]
-                        st.session_state.has_video = any(
-                            fmt.get('vcodec') not in (None, 'none', '')
-                            for fmt in formats
-                        )
-                        st.session_state.has_audio = any(
-                            fmt.get('acodec') not in (None, 'none', '')
-                            for fmt in formats
-                        )
+                        formats = media_info.get('formats') or [media_info]
+                        
+                        has_vid = False
+                        has_aud = False
+                        
+                        for fmt in formats:
+                            vcodec = fmt.get('vcodec')
+                            acodec = fmt.get('acodec')
+                            ext = fmt.get('ext', '').lower()
+                            
+                            # Fallback check: Some extractors return vcodec=None but provide an mp4 extension
+                            if vcodec not in (None, 'none', '') or ext in ('mp4', 'webm', 'mov', 'mkv'):
+                                has_vid = True
+                            if acodec not in (None, 'none', '') or ext in ('m4a', 'mp3', 'ogg', 'wav', 'aac'):
+                                has_aud = True
+                                
+                        # Final explicit fallback 
+                        if not has_vid and media_info.get('_type') == 'video':
+                            has_vid = True
+
+                        st.session_state.has_video = has_vid
+                        st.session_state.has_audio = has_aud
 
                         if st.session_state.has_video:
                             st.session_state.detected_type = 'video'
@@ -217,6 +238,8 @@ if st.session_state.app_step == 'input':
                             st.session_state.detected_type = 'audio'
                         else:
                             st.session_state.detected_type = 'image'
+                            if not st.session_state.direct_url:
+                                st.session_state.direct_url = best_thumb
                             
                         st.session_state.app_step = 'preview'
                         st.rerun()
@@ -248,12 +271,18 @@ elif st.session_state.app_step == 'preview':
             encoded_url = urllib.parse.quote(clean_url)
             st.markdown(f'''<div style="display: flex; justify-content: center; margin-bottom: 20px;"><iframe src="https://www.facebook.com/plugins/video.php?href={encoded_url}&show_text=0&width=560" width="560" height="315" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen="true" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"></iframe></div>''', unsafe_allow_html=True)
         elif 'instagram.com' in target:
-            parsed = urllib.parse.urlparse(st.session_state.target_url)
-            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-            if not base_url.endswith('/'): base_url += '/'
-            st.markdown(f'''<div style="display: flex; justify-content: center; margin-bottom: 20px;"><iframe src="{base_url}embed" width="400" height="480" frameborder="0" scrolling="no" allowtransparency="true"></iframe></div>''', unsafe_allow_html=True)
+            # Bypass broken iframes by natively playing the raw mp4 URL extracted by yt-dlp
+            if st.session_state.direct_url:
+                st.video(st.session_state.direct_url)
+            else:
+                parsed = urllib.parse.urlparse(st.session_state.target_url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if not base_url.endswith('/'): base_url += '/'
+                st.markdown(f'''<div style="display: flex; justify-content: center; margin-bottom: 20px;"><iframe src="{base_url}embed" width="400" height="480" frameborder="0" scrolling="no" allowtransparency="true"></iframe></div>''', unsafe_allow_html=True)
         else:
-            if st.session_state.thumbnail_url: 
+            if st.session_state.direct_url:
+                st.video(st.session_state.direct_url)
+            elif st.session_state.thumbnail_url: 
                 st.image(st.session_state.thumbnail_url, use_container_width=True)
             
     elif st.session_state.detected_type == 'audio':
