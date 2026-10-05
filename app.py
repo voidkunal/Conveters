@@ -6,12 +6,17 @@ import urllib.parse
 import shutil
 import tempfile
 import re
+import imageio_ffmpeg
+
+# Get the internal path to the bundled FFmpeg to bypass Streamlit's system limitations
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 # --- 1. Page Config & Session State ---
 st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="wide")
 
 if 'app_step' not in st.session_state:
     st.session_state.app_step = 'input'
+
 if 'temp_dir' not in st.session_state:
     os.makedirs('downloads', exist_ok=True)
     st.session_state.temp_dir = 'downloads'
@@ -89,25 +94,28 @@ def get_base_opts(flat=False):
         'no_warnings': True,
         'source_address': '0.0.0.0', 
         'rm_cachedir': True,
+        'ffmpeg_location': FFMPEG_PATH, # Uses the built-in Python FFmpeg
         'extractor_args': {
-            'youtube': {'player_client': ['ios']} # The only client that currently bypasses the 403 wall
+            'youtube': {'player_client': ['ios']}
         }
     }
     if flat:
         opts['extract_flat'] = 'in_playlist'
     return opts
 
-# --- 4. Processing Logic with External Bypass API ---
+# --- 4. Processing Logic ---
 def process_single_download(target_url, format_str, is_audio=False):
-    safe_title = "".join([c for c in (st.session_state.media_title or "Media") if c.isalpha() or c.isdigit() or c==' ']).rstrip()
-    
     with st.spinner("Downloading media to server buffer..."):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
         
         if is_audio:
             opts['format'] = 'bestaudio/best'
-            opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+            opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         else:
             opts['format'] = format_str
         
@@ -115,6 +123,7 @@ def process_single_download(target_url, format_str, is_audio=False):
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(target_url, download=True)
                 expected_filename = ydl.prepare_filename(info)
+                
                 if is_audio:
                     base, _ = os.path.splitext(expected_filename)
                     expected_filename = base + '.mp3'
@@ -122,42 +131,10 @@ def process_single_download(target_url, format_str, is_audio=False):
                 st.session_state.file_path = expected_filename
                 st.session_state.app_step = 'ready'
                 st.rerun()
-                
         except Exception as e:
             error_msg = str(e)
-            
-            # TRIGGER THE CHEAT CODE: If Streamlit's IP gets 403'd, route through Cobalt API
-            if "403" in error_msg or "Sign in" in error_msg or "blocked" in error_msg.lower():
-                try:
-                    st.toast("Datacenter blocked. Rerouting through external API bypass...", icon="🔄")
-                    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-                    payload = {"url": target_url, "isAudioOnly": is_audio}
-                    
-                    res = requests.post("https://api.cobalt.tools/api/json", json=payload, headers=headers, timeout=20)
-                    res.raise_for_status()
-                    data = res.json()
-                    dl_url = data.get("url")
-                    
-                    if dl_url:
-                        ext = ".mp3" if is_audio else ".mp4"
-                        fallback_path = os.path.join(st.session_state.temp_dir, f"{safe_title}{ext}")
-                        
-                        with requests.get(dl_url, stream=True) as r:
-                            r.raise_for_status()
-                            with open(fallback_path, 'wb') as f:
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                                    
-                        st.session_state.file_path = fallback_path
-                        st.session_state.app_step = 'ready'
-                        st.rerun()
-                    else:
-                        st.error("❌ Total Failure: Streamlit IP is blocked, and the Bypass API could not fetch the link.")
-                except Exception as bypass_e:
-                    st.error(f"❌ **Total Failure:** Both the direct connection and bypass API were blocked. \n\n*Bypass Error:* `{str(bypass_e)}`")
-            
-            elif "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
-                st.error("⚠️️ **Missing FFmpeg:** Streamlit Cloud requires a `packages.txt` file containing `ffmpeg` to convert MP3s.")
+            if "403" in error_msg or "Sign in" in error_msg:
+                st.error(f"❌ **Platform Blocked Request:** YouTube is temporarily blocking the cloud server. \n\n*Technical Details:* `{error_msg}`")
             else:
                 st.error(f"❌ **Extraction Error:** \n\n`{error_msg}`")
 
