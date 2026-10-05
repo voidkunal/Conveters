@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import streamlit as st
 import yt_dlp
 import imageio_ffmpeg
@@ -90,7 +91,43 @@ st.markdown("<div class='main-title'>Void Tech <span>Converter</span></div>", un
 st.markdown("<div class='sub-title'>Intelligently auto-detects, previews, and downloads Videos, Audio, Images, and Public Profiles from YouTube, Facebook, and Instagram.</div>", unsafe_allow_html=True)
 
 # --- 3. Stealth yt-dlp Configuration ---
-def get_base_opts(flat=False):
+@contextmanager
+def youtube_cookie_file():
+    local_cookie_file = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'cookies.txt',
+    )
+    if os.path.isfile(local_cookie_file):
+        yield local_cookie_file
+        return
+
+    cookie_data = os.environ.get('YOUTUBE_COOKIES')
+    if cookie_data is None:
+        try:
+            cookie_data = st.secrets.get('YOUTUBE_COOKIES')
+        except FileNotFoundError:
+            cookie_data = None
+
+    if not cookie_data:
+        yield None
+        return
+    if not isinstance(cookie_data, str):
+        raise ValueError("YOUTUBE_COOKIES must contain Netscape-format cookie text.")
+
+    fd, temporary_cookie_file = tempfile.mkstemp(
+        prefix='conveters-youtube-cookies-',
+        suffix='.txt',
+    )
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as cookie_file:
+            cookie_file.write(cookie_data)
+        yield temporary_cookie_file
+    finally:
+        if os.path.exists(temporary_cookie_file):
+            os.remove(temporary_cookie_file)
+
+
+def get_base_opts(flat=False, cookie_file=None):
     opts = {
         'quiet': True, 
         'no_warnings': True,
@@ -98,8 +135,7 @@ def get_base_opts(flat=False):
         'force_ipv4': True,
     }
 
-    cookie_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-    if os.path.isfile(cookie_file):
+    if cookie_file:
         opts['cookiefile'] = cookie_file
         
     if flat:
@@ -157,11 +193,11 @@ def get_download_error_message(target_url, error):
     if is_youtube and media_rejected:
         return (
             "❌ **YouTube did not provide the video data to this server.** "
-            "This is a source-access restriction, not an MP4 conversion problem. "
-            "Streamlit Cloud may be unable to fetch media from YouTube; changing formats "
-            "or retrying conversion cannot repair a denied or empty response. "
-            "For content you are authorized to download, run the app on a network where "
-            "YouTube permits the request, or provide a direct media file from a host you control."
+            "This is a YouTube access restriction, not an MP4 conversion problem. "
+            "For content that requires your account, configure your own exported cookies "
+            "as the YOUTUBE_COOKIES secret in Streamlit Cloud. If that secret is configured "
+            "and YouTube still returns 403, the cloud host is not permitted to fetch the media; "
+            "changing formats or retrying conversion cannot fix that."
             f"\n\n*Technical Details:* `{error_text}`"
         )
     if "requested format is not available" in error_text.lower():
@@ -249,18 +285,22 @@ def process_single_download(target_url, is_audio=False):
             )
         
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(target_url, download=True)
-                downloaded_path = find_downloaded_file(ydl, info)
+            with youtube_cookie_file() as cookie_file:
+                if cookie_file:
+                    opts['cookiefile'] = cookie_file
 
-                if is_audio:
-                    expected_filename = os.path.splitext(downloaded_path)[0] + '.mp3'
-                    if not os.path.isfile(expected_filename):
-                        raise FileNotFoundError("FFmpeg did not produce the requested MP3 file.")
-                    if os.path.getsize(expected_filename) == 0:
-                        raise RuntimeError("FFmpeg produced an empty MP3 file.")
-                else:
-                    expected_filename = convert_video_to_mp4(downloaded_path, ffmpeg_path)
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(target_url, download=True)
+                    downloaded_path = find_downloaded_file(ydl, info)
+
+                    if is_audio:
+                        expected_filename = os.path.splitext(downloaded_path)[0] + '.mp3'
+                        if not os.path.isfile(expected_filename):
+                            raise FileNotFoundError("FFmpeg did not produce the requested MP3 file.")
+                        if os.path.getsize(expected_filename) == 0:
+                            raise RuntimeError("FFmpeg produced an empty MP3 file.")
+                    else:
+                        expected_filename = convert_video_to_mp4(downloaded_path, ffmpeg_path)
                 
                 st.session_state.file_path = expected_filename
                 st.session_state.download_is_audio = is_audio
@@ -309,8 +349,9 @@ if st.session_state.app_step == 'input':
                     st.error("❌ Meta blocked access to this profile. Please paste a link to an individual post or reel instead.")
             else:
                 try:
-                    with yt_dlp.YoutubeDL(get_base_opts()) as ydl:
-                        info = ydl.extract_info(url, download=False)
+                    with youtube_cookie_file() as cookie_file:
+                        with yt_dlp.YoutubeDL(get_base_opts(cookie_file=cookie_file)) as ydl:
+                            info = ydl.extract_info(url, download=False)
                         
                         entries = info.get('entries')
                         if entries and len(entries) > 0:

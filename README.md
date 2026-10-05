@@ -16,4 +16,17 @@ access, or use a direct media file hosted by you. The deployed Streamlit Cloud
 instance may not be able to download directly from YouTube.
 
 For local use, yt-dlp can read a `cookies.txt` file placed beside `app.py`.
-Treat that file like a password: do not commit or share it.
+For Streamlit Community Cloud, authorized account cookies can instead be added
+in the app's **Settings > Secrets** as a TOML string:
+
+```toml
+YOUTUBE_COOKIES = """
+# Netscape HTTP Cookie File
+...your exported Netscape-format cookies...
+"""
+```
+
+Do not commit or share this value. The app writes it to a temporary file only
+while yt-dlp is running and removes that file afterward. Cookies can help when
+the source requires your account, but they cannot make YouTube serve media to
+a cloud IP that YouTube blocks.
