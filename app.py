@@ -4,6 +4,8 @@ import os
 import requests
 import urllib.parse
 import shutil
+import tempfile
+import re
 
 # --- 1. Page Config & Session State ---
 st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="wide")
@@ -89,11 +91,14 @@ def get_base_opts(flat=False):
         'quiet': True, 
         'nocheckcertificate': True,
         'no_warnings': True,
+        # CRITICAL FIX: Forces IPv4. YouTube heavily bans Streamlit's IPv6 datacenter ranges.
+        'source_address': '0.0.0.0', 
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
         },
         'extractor_args': {
-            'youtube': {'player_client': ['android', 'mweb', 'web']}, # Aggressive cloud bypass
+            # Spoofing iOS bypasses the specific web-client 403 blocks
+            'youtube': {'player_client': ['ios', 'android', 'web']},
             'facebook': {'api': ['graphql']}
         }
     }
@@ -130,7 +135,6 @@ def process_single_download(target_url, format_str, is_audio=False):
                 st.session_state.app_step = 'ready'
                 st.rerun()
         except Exception as e:
-            # Exposed error log to see exactly what Streamlit Cloud is blocking
             error_msg = str(e)
             if "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
                 st.error("⚠️ **Missing FFmpeg:** Streamlit Cloud requires a `packages.txt` file containing `ffmpeg` to convert MP3s.")
@@ -144,7 +148,6 @@ def safe_ig_profile_scrape(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = requests.get(url, headers=headers, timeout=5)
-        import re
         img_match = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
         desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', r.text)
         
@@ -282,7 +285,7 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
         mime_map = {
             '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
             '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
-            '.jpg': 'image/jpeg', '.png': 'image/png'
+            '.jpg': 'image/jpeg', '.png': 'image/png', '.zip': 'application/zip'
         }
         mime_type = mime_map.get(file_ext, 'application/octet-stream')
         
