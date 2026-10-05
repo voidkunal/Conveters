@@ -91,13 +91,13 @@ def get_base_opts(flat=False):
         'source_address': '0.0.0.0', 
         'rm_cachedir': True,
         'force_ipv4': True,
-        'ignore_no_formats_error': True,
+        'format': 'best',
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9'
         },
         'extractor_args': {
-            'youtube': {'player_client': ['ios']}
+            'youtube': {'player_client': ['android', 'web']}
         }
     }
 
@@ -109,7 +109,7 @@ def get_base_opts(flat=False):
     return opts
 
 # --- 4. Processing Logic ---
-def process_single_download(target_url, format_str, is_audio=False):
+def process_single_download(target_url, is_audio=False):
     with st.spinner("Downloading media to server buffer..."):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
@@ -128,7 +128,7 @@ def process_single_download(target_url, format_str, is_audio=False):
             else:
                 st.info("FFmpeg is unavailable, so the audio will be downloaded in its original format.")
         else:
-            opts['format'] = format_str
+            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
         
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -138,6 +138,13 @@ def process_single_download(target_url, format_str, is_audio=False):
                 if is_audio and ffmpeg_path:
                     base, _ = os.path.splitext(expected_filename)
                     expected_filename = base + '.mp3'
+                elif not is_audio:
+                    if not os.path.exists(expected_filename):
+                        base, _ = os.path.splitext(expected_filename)
+                        for ext in ['.mp4', '.mkv', '.webm']:
+                            if os.path.exists(base + ext):
+                                expected_filename = base + ext
+                                break
                 
                 st.session_state.file_path = expected_filename
                 st.session_state.download_is_audio = is_audio
@@ -190,10 +197,9 @@ if st.session_state.app_step == 'input':
                     st.error("❌ Meta blocked access to this profile. Please paste a link to an individual post or reel instead.")
             else:
                 try:
-                    with yt_dlp.YoutubeDL(get_base_opts(flat=True)) as ydl:
+                    with yt_dlp.YoutubeDL(get_base_opts()) as ydl:
                         info = ydl.extract_info(url, download=False)
                         
-                        # Handle playlists/carousels (like Instagram multi-image posts)
                         entries = info.get('entries')
                         if entries and len(entries) > 0:
                             media_info = entries[0]
@@ -204,31 +210,35 @@ if st.session_state.app_step == 'input':
                         
                         thumbnails = media_info.get('thumbnails', [])
                         best_thumb = thumbnails[-1]['url'] if thumbnails else media_info.get('thumbnail')
-                        
                         st.session_state.thumbnail_url = best_thumb
-                        st.session_state.direct_url = media_info.get('url')
-                        st.session_state.target_url = info.get('webpage_url', url)
+                        st.session_state.target_url = media_info.get('webpage_url') or info.get('webpage_url', url)
                         
-                        formats = media_info.get('formats') or [media_info]
+                        stream_formats = media_info.get('formats') or []
+                        formats = stream_formats or [media_info]
                         
                         has_vid = False
                         has_aud = False
                         
+                        best_direct_url = media_info.get('url')
                         for fmt in formats:
                             vcodec = fmt.get('vcodec')
                             acodec = fmt.get('acodec')
                             ext = fmt.get('ext', '').lower()
                             
-                            # Fallback check: Some extractors return vcodec=None but provide an mp4 extension
                             if vcodec not in (None, 'none', '') or ext in ('mp4', 'webm', 'mov', 'mkv'):
                                 has_vid = True
+                                if ext == 'mp4' and fmt.get('url'):
+                                    best_direct_url = fmt.get('url')
+                            
                             if acodec not in (None, 'none', '') or ext in ('m4a', 'mp3', 'ogg', 'wav', 'aac'):
                                 has_aud = True
                                 
-                        # Final explicit fallback 
-                        if not has_vid and media_info.get('_type') == 'video':
+                        if media_info.get('_type') == 'video' or info.get('_type') == 'video':
                             has_vid = True
+                            if not stream_formats:
+                                has_aud = True
 
+                        st.session_state.direct_url = best_direct_url
                         st.session_state.has_video = has_vid
                         st.session_state.has_audio = has_aud
 
@@ -265,24 +275,21 @@ elif st.session_state.app_step == 'preview':
     elif st.session_state.detected_type == 'video':
         target = st.session_state.target_url.lower()
         if 'youtube.com' in target or 'youtu.be' in target:
-            st.video(st.session_state.target_url)
-        elif 'facebook.com' in target or 'fb.watch' in target:
-            clean_url = st.session_state.target_url.split('?')[0] if 'fb.watch' in target else st.session_state.target_url
-            encoded_url = urllib.parse.quote(clean_url)
-            st.markdown(f'''<div style="display: flex; justify-content: center; margin-bottom: 20px;"><iframe src="https://www.facebook.com/plugins/video.php?href={encoded_url}&show_text=0&width=560" width="560" height="315" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen="true" allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"></iframe></div>''', unsafe_allow_html=True)
-        elif 'instagram.com' in target:
-            # Bypass broken iframes by natively playing the raw mp4 URL extracted by yt-dlp
-            if st.session_state.direct_url:
+            preview_url = st.session_state.target_url
+            if '/shorts/' in preview_url:
+                preview_url = preview_url.replace('/shorts/', '/watch?v=')
+            st.video(preview_url)
+            
+        elif 'instagram.com' in target or 'facebook.com' in target:
+            if st.session_state.direct_url and '.mp4' in st.session_state.direct_url.lower():
                 st.video(st.session_state.direct_url)
-            else:
-                parsed = urllib.parse.urlparse(st.session_state.target_url)
-                base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if not base_url.endswith('/'): base_url += '/'
-                st.markdown(f'''<div style="display: flex; justify-content: center; margin-bottom: 20px;"><iframe src="{base_url}embed" width="400" height="480" frameborder="0" scrolling="no" allowtransparency="true"></iframe></div>''', unsafe_allow_html=True)
+            elif st.session_state.thumbnail_url:
+                st.image(st.session_state.thumbnail_url, use_container_width=True)
+                st.info("Live video preview restricted by Meta, but the video can still be downloaded below.")
         else:
             if st.session_state.direct_url:
                 st.video(st.session_state.direct_url)
-            elif st.session_state.thumbnail_url: 
+            elif st.session_state.thumbnail_url:
                 st.image(st.session_state.thumbnail_url, use_container_width=True)
             
     elif st.session_state.detected_type == 'audio':
@@ -301,10 +308,10 @@ elif st.session_state.app_step == 'preview':
         st.markdown("### Available Downloads:")
         if st.session_state.detected_type in ('video', 'audio'):
             if st.session_state.has_video and st.button("Download Video", use_container_width=True):
-                process_single_download(st.session_state.target_url, 'b[ext=mp4]/best')
+                process_single_download(st.session_state.target_url)
             audio_label = "Download Audio (MP3)" if shutil.which('ffmpeg') else "Download Audio (Original Format)"
             if st.session_state.has_audio and st.button(audio_label, use_container_width=True):
-                process_single_download(st.session_state.target_url, None, is_audio=True)
+                process_single_download(st.session_state.target_url, is_audio=True)
                     
         elif st.session_state.detected_type == 'image':
             if st.button("Download High Quality Image", use_container_width=True):
@@ -337,7 +344,7 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
     with open(st.session_state.file_path, "rb") as file:
         file_ext = os.path.splitext(st.session_state.file_path)[1].lower()
         mime_map = {
-            '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+            '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska',
             '.jpg': 'image/jpeg', '.png': 'image/png',
             '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
             '.aac': 'audio/aac', '.opus': 'audio/ogg',
