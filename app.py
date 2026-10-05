@@ -13,7 +13,6 @@ st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="w
 if 'app_step' not in st.session_state:
     st.session_state.app_step = 'input'
 
-# Fix for Streamlit Cloud file permissions: Use a local folder instead of tempfile
 if 'temp_dir' not in st.session_state:
     os.makedirs('downloads', exist_ok=True)
     st.session_state.temp_dir = 'downloads'
@@ -91,15 +90,11 @@ def get_base_opts(flat=False):
         'quiet': True, 
         'nocheckcertificate': True,
         'no_warnings': True,
-        # CRITICAL FIX: Forces IPv4. YouTube heavily bans Streamlit's IPv6 datacenter ranges.
         'source_address': '0.0.0.0', 
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
-        },
+        'rm_cachedir': True, # CRITICAL: Clears bad tokens that cause persistent 403s
         'extractor_args': {
-            # Spoofing iOS bypasses the specific web-client 403 blocks
-            'youtube': {'player_client': ['ios', 'android', 'web']},
-            'facebook': {'api': ['graphql']}
+            # CRITICAL: Completely removed 'web'. We only use app APIs now to bypass the 403.
+            'youtube': {'player_client': ['android', 'tv']}
         }
     }
     if flat:
@@ -285,7 +280,7 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
         mime_map = {
             '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
             '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
-            '.jpg': 'image/jpeg', '.png': 'image/png', '.zip': 'application/zip'
+            '.jpg': 'image/jpeg', '.png': 'image/png'
         }
         mime_type = mime_map.get(file_ext, 'application/octet-stream')
         
