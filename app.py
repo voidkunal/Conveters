@@ -6,10 +6,6 @@ import urllib.parse
 import shutil
 import tempfile
 import re
-import imageio_ffmpeg
-
-# Get the internal path to the bundled FFmpeg to bypass Streamlit's system limitations
-FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 # --- 1. Page Config & Session State ---
 st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="wide")
@@ -94,7 +90,7 @@ def get_base_opts(flat=False):
         'no_warnings': True,
         'source_address': '0.0.0.0', 
         'rm_cachedir': True,
-        'ffmpeg_location': FFMPEG_PATH, # Uses the built-in Python FFmpeg
+        'ffmpeg_location': '/usr/bin/ffmpeg',
         'extractor_args': {
             'youtube': {'player_client': ['ios']}
         }
@@ -289,8 +285,7 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
             file_name=os.path.basename(st.session_state.file_path),
             mime=mime_type,
             use_container_width=True,
-            type="primary",
-            on_click=full_cleanup 
+            type="primary"
         )
     
     st.markdown("<p style='text-align: center; color: #8B949E; margin-top: 15px;'><em>Note: Media is securely wiped from our servers immediately upon download.</em></p>", unsafe_allow_html=True)
