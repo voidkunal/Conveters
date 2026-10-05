@@ -1,3 +1,4 @@
 streamlit
-yt-dlp>=2024.08.06
+yt-dlp
 requests
+imageio-ffmpeg
