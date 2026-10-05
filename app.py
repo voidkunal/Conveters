@@ -17,7 +17,7 @@ if 'temp_dir' not in st.session_state:
     os.makedirs('downloads', exist_ok=True)
     st.session_state.temp_dir = 'downloads'
 
-for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected_type', 'target_url', 'profile_entries', 'ig_bio']:
+for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected_type', 'target_url', 'profile_entries', 'ig_bio', 'has_video', 'has_audio', 'download_is_audio']:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -31,7 +31,7 @@ def full_cleanup():
         except Exception:
             pass
     st.session_state.app_step = 'input'
-    for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected_type', 'target_url', 'profile_entries', 'ig_bio']:
+    for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected_type', 'target_url', 'profile_entries', 'ig_bio', 'has_video', 'has_audio', 'download_is_audio']:
         st.session_state[key] = None
 
 # --- 2. Navigation & Theme ---
@@ -90,7 +90,6 @@ def get_base_opts(flat=False):
         'no_warnings': True,
         'source_address': '0.0.0.0', 
         'rm_cachedir': True,
-        'ffmpeg_location': '/usr/bin/ffmpeg',
         'force_ipv4': True,
         'ignore_no_formats_error': True,
         'http_headers': {
@@ -101,7 +100,7 @@ def get_base_opts(flat=False):
             'youtube': {'player_client': ['ios']}
         }
     }
-    
+
     if os.path.exists('cookies.txt'):
         opts['cookiefile'] = 'cookies.txt'
         
@@ -114,14 +113,20 @@ def process_single_download(target_url, format_str, is_audio=False):
     with st.spinner("Downloading media to server buffer..."):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
+        ffmpeg_path = shutil.which('ffmpeg')
+        if ffmpeg_path:
+            opts['ffmpeg_location'] = ffmpeg_path
 
         if is_audio:
             opts['format'] = 'bestaudio/best'
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+            if ffmpeg_path:
+                opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            else:
+                st.info("FFmpeg is unavailable, so the audio will be downloaded in its original format.")
         else:
             opts['format'] = format_str
         
@@ -130,11 +135,12 @@ def process_single_download(target_url, format_str, is_audio=False):
                 info = ydl.extract_info(target_url, download=True)
                 expected_filename = ydl.prepare_filename(info)
 
-                if is_audio:
+                if is_audio and ffmpeg_path:
                     base, _ = os.path.splitext(expected_filename)
                     expected_filename = base + '.mp3'
                 
                 st.session_state.file_path = expected_filename
+                st.session_state.download_is_audio = is_audio
                 st.session_state.app_step = 'ready'
                 st.rerun()
         except Exception as e:
@@ -195,12 +201,20 @@ if st.session_state.app_step == 'input':
                         st.session_state.direct_url = info.get('url', best_thumb)
                         st.session_state.target_url = info.get('webpage_url', url)
                         
-                        if info.get('formats'):
-                            ext = info.get('ext', '').lower()
-                            if ext in ['mp4', 'webm', 'mov'] or info.get('vcodec') not in [None, 'none', '']:
-                                st.session_state.detected_type = 'video'
-                            else:
-                                st.session_state.detected_type = 'audio'
+                        formats = info.get('formats') or [info]
+                        st.session_state.has_video = any(
+                            fmt.get('vcodec') not in (None, 'none', '')
+                            for fmt in formats
+                        )
+                        st.session_state.has_audio = any(
+                            fmt.get('acodec') not in (None, 'none', '')
+                            for fmt in formats
+                        )
+
+                        if st.session_state.has_video:
+                            st.session_state.detected_type = 'video'
+                        elif st.session_state.has_audio:
+                            st.session_state.detected_type = 'audio'
                         else:
                             st.session_state.detected_type = 'image'
                             
@@ -256,14 +270,11 @@ elif st.session_state.app_step == 'preview':
     if st.session_state.detected_type != 'ig_profile_preview':
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### Available Downloads:")
-        if st.session_state.detected_type == 'video':
-            if st.button("Extract High-Quality Video (MP4)", use_container_width=True):
+        if st.session_state.detected_type in ('video', 'audio'):
+            if st.session_state.has_video and st.button("Download Video", use_container_width=True):
                 process_single_download(st.session_state.target_url, 'b[ext=mp4]/best')
-            if st.button("Extract Audio Track Only (MP3)", use_container_width=True):
-                process_single_download(st.session_state.target_url, None, is_audio=True)
-                        
-        elif st.session_state.detected_type == 'audio':
-            if st.button("Download Audio Track (MP3)", use_container_width=True):
+            audio_label = "Download Audio (MP3)" if shutil.which('ffmpeg') else "Download Audio (Original Format)"
+            if st.session_state.has_audio and st.button(audio_label, use_container_width=True):
                 process_single_download(st.session_state.target_url, None, is_audio=True)
                     
         elif st.session_state.detected_type == 'image':
@@ -300,8 +311,11 @@ elif st.session_state.app_step == 'ready' and st.session_state.file_path:
             '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
             '.jpg': 'image/jpeg', '.png': 'image/png',
             '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
+            '.aac': 'audio/aac', '.opus': 'audio/ogg',
         }
         mime_type = mime_map.get(file_ext, 'application/octet-stream')
+        if file_ext == '.webm' and st.session_state.download_is_audio:
+            mime_type = 'audio/webm'
         
         st.download_button(
             label=f"Save {file_ext.upper().replace('.', '')} to Device",
