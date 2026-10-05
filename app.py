@@ -4,16 +4,17 @@ import os
 import requests
 import urllib.parse
 import shutil
-import tempfile
-import re
 
 # --- 1. Page Config & Session State ---
 st.set_page_config(page_title="Void Tech Converter", page_icon="💀", layout="wide")
 
 if 'app_step' not in st.session_state:
     st.session_state.app_step = 'input'
+
+# Fix for Streamlit Cloud file permissions: Use a local folder instead of tempfile
 if 'temp_dir' not in st.session_state:
-    st.session_state.temp_dir = tempfile.mkdtemp()
+    os.makedirs('downloads', exist_ok=True)
+    st.session_state.temp_dir = 'downloads'
 
 for key in ['file_path', 'media_title', 'thumbnail_url', 'direct_url', 'detected_type', 'target_url', 'profile_entries', 'ig_bio']:
     if key not in st.session_state:
@@ -87,8 +88,14 @@ def get_base_opts(flat=False):
     opts = {
         'quiet': True, 
         'nocheckcertificate': True,
-        'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}, 'facebook': {'api': ['graphql']}}
+        'no_warnings': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        'extractor_args': {
+            'youtube': {'player_client': ['android', 'mweb', 'web']}, # Aggressive cloud bypass
+            'facebook': {'api': ['graphql']}
+        }
     }
     if flat:
         opts['extract_flat'] = 'in_playlist'
@@ -100,7 +107,6 @@ def process_single_download(target_url, format_str, is_audio=False):
         opts = get_base_opts()
         opts['outtmpl'] = os.path.join(st.session_state.temp_dir, '%(title)s.%(ext)s')
         
-        # Strict Audio Enforcement
         if is_audio:
             opts['format'] = 'bestaudio/best'
             opts['postprocessors'] = [{
@@ -123,19 +129,22 @@ def process_single_download(target_url, format_str, is_audio=False):
                 st.session_state.file_path = expected_filename
                 st.session_state.app_step = 'ready'
                 st.rerun()
-        except yt_dlp.utils.PostProcessingError:
-            st.error("**Local Testing Notice:** Your Mac requires FFmpeg to convert to MP3. This will work perfectly on Streamlit Cloud once you deploy with a `packages.txt` file containing `ffmpeg`.")
         except Exception as e:
-            if "ffmpeg" in str(e).lower() or "ffprobe" in str(e).lower():
-                st.error("**Local Testing Notice:** Your Mac requires FFmpeg to convert to MP3. This will work perfectly on Streamlit Cloud once you deploy with a `packages.txt` file containing `ffmpeg`.")
+            # Exposed error log to see exactly what Streamlit Cloud is blocking
+            error_msg = str(e)
+            if "ffmpeg" in error_msg.lower() or "ffprobe" in error_msg.lower():
+                st.error("⚠️ **Missing FFmpeg:** Streamlit Cloud requires a `packages.txt` file containing `ffmpeg` to convert MP3s.")
+            elif "403" in error_msg or "Sign in" in error_msg:
+                st.error(f"❌ **Platform Blocked Request:** YouTube is blocking Streamlit's IP address from downloading this specific video. \n\n*Technical Details:* `{error_msg}`")
             else:
-                st.error("Failed to process media. The platform may have blocked the request.")
+                st.error(f"❌ **Extraction Error:** \n\n`{error_msg}`")
 
 # Lightweight scraper to prevent crashes on Instagram Profiles
 def safe_ig_profile_scrape(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = requests.get(url, headers=headers, timeout=5)
+        import re
         img_match = re.search(r'<meta property="og:image" content="([^"]+)"', r.text)
         desc_match = re.search(r'<meta property="og:description" content="([^"]+)"', r.text)
         
@@ -169,7 +178,7 @@ if st.session_state.app_step == 'input':
                     st.session_state.app_step = 'preview'
                     st.rerun()
                 else:
-                    st.error("Meta blocked access to this profile. Please paste a link to an individual post or reel instead.")
+                    st.error("❌ Meta blocked access to this profile. Please paste a link to an individual post or reel instead.")
             else:
                 try:
                     with yt_dlp.YoutubeDL(get_base_opts(flat=True)) as ydl:
@@ -189,14 +198,13 @@ if st.session_state.app_step == 'input':
                             
                         st.session_state.app_step = 'preview'
                         st.rerun()
-                except Exception:
-                    st.error("Could not locate media. Ensure the link is public and valid.")
+                except Exception as e:
+                    st.error(f"❌ Could not locate media. Ensure the link is public and valid. \n\n*Error details:* `{str(e)}`")
 
 # --- 6. Step 2: Dynamic Preview ---
 elif st.session_state.app_step == 'preview':
     st.markdown("<h2 style='text-align:center;'>Search result</h2>", unsafe_allow_html=True)
     
-    # Safe Profile UI Fallback
     if st.session_state.detected_type == 'ig_profile_preview':
         st.markdown(f"""
             <div class='ig-profile-card'>
@@ -209,7 +217,6 @@ elif st.session_state.app_step == 'preview':
         """, unsafe_allow_html=True)
         st.warning("⚠ **Notice:** Meta heavily restricts automated profile downloads. To download videos/photos, please copy and paste the link to an **individual post**.")
 
-    # Standard Media Displays
     elif st.session_state.detected_type == 'video':
         target = st.session_state.target_url.lower()
         if 'youtube.com' in target or 'youtu.be' in target:
@@ -231,7 +238,6 @@ elif st.session_state.app_step == 'preview':
     elif st.session_state.detected_type == 'image':
         st.image(st.session_state.thumbnail_url or st.session_state.direct_url, use_column_width=True)
 
-    # Download Actions
     if st.session_state.detected_type != 'ig_profile_preview':
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### Available Downloads:")
